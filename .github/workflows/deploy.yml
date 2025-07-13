@@ -1,0 +1,63 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to deploy'
+        required: true
+
+env:
+  REGISTRY: cr.yandex/crp00h5g664thgoe13i8
+  IMAGE_SUFFIX: _latest
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if image exists in Container Registry
+        run: |
+          echo "Проверяем наличие образа в реестре..."
+          IMAGE="${REGISTRY}/app:${{ github.event.inputs.version }}${IMAGE_SUFFIX}"
+          echo "Проверяем тег: $IMAGE"
+          if ! docker manifest inspect $IMAGE > /dev/null 2>&1; then
+            echo "❌ Ошибка: образ с тегом $IMAGE не существует."
+            exit 1
+          fi
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
+
+      - name: SSH and deploy on VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_IP }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            echo "✅ Подключились на ВМ"
+
+            docker stop app-container || true
+            docker rm app-container || true
+
+            echo "${{ secrets.YC_OAUTH }}" | docker login --username oauth --password-stdin cr.yandex
+
+            docker pull $REGISTRY/app:${{ github.event.inputs.version }}${IMAGE_SUFFIX}
+
+            docker run -d --name app-container -p 3000:3000 $REGISTRY/app:${{ github.event.inputs.version }}${IMAGE_SUFFIX}
+
+            echo "✅ Приложение запущено на порту 3000"
+
+      - name: Comment on Issue
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.inputs.version }}
+          body: |
+            ✅ Деплой в прод завершен
+            - Версия: ${{ github.event.inputs.version }}
+            - Дата: $(date)
+            - Автор: ${{ github.actor }}
