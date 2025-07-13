@@ -46,10 +46,20 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v4
+        with:
+
           push: true
           tags: |
             ${{ env.REGISTRY }}/app:${{ env.VERSION }}
             ${{ env.REGISTRY }}/app:${{ env.VERSION }}_latest
+
+          registry: cr.yandex
+          username: oauth
+          password: ${{ secrets.YC_OAUTH }}
+
 
       - name: Create git tag
         run: |
