@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: cr.yandex/crp00h5g664thgoe13i8
+  VERSION: ${{ github.run_number }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint and tests
+        run: |
+          npm run lint &
+          npm test &
+          wait
+
+      - name: Create release branch
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git checkout -b releases/${{ env.VERSION }}
+          git push origin releases/${{ env.VERSION }}
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/app:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/app:${{ env.VERSION }}_latest
+          registry: cr.yandex
+          username: oauth
+          password: ${{ secrets.YC_OAUTH }}
+
+      - name: Create git tag
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag v${{ env.VERSION }}
+          git push origin v${{ env.VERSION }}
+
+      - name: Update CHANGELOG.md
+        run: |
+          echo -e "## v${{ env.VERSION }}\n\n$(git log $(git describe --tags --abbrev=0 --exclude='v*')..HEAD --oneline)\n\n$(cat CHANGELOG.md)" > CHANGELOG.md
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add CHANGELOG.md
+          git commit -m "Update CHANGELOG.md for v${{ env.VERSION }}"
+          git push origin HEAD
+
+      - name: Create GitHub Issue for release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const registry = process.env.REGISTRY;
+            const date = new Date().toISOString().split('T')[0];
+            const actor = context.actor;
+
+            // Пытаемся получить список коммитов от предыдущего тега до текущего
+            let commits = 'Нет предыдущих коммитов';
+            try {
+              const compare = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: `v${version - 1}`,
+                head: `v${version}`
+              });
+              commits = compare.data.commits.map(c => `- ${c.commit.message}`).join('\n');
+            } catch {}
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Release v${version}`,
+              body: `Дата: ${date}\nАвтор: ${actor}\nВерсия: ${version}\nDocker: ${registry}/app:${version}\n\nКоммиты:\n${commits}`
+            });
